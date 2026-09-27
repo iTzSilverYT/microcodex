@@ -31,12 +31,16 @@ STDOUT
 
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Too many sub-agents are still running
 STDERR
