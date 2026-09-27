@@ -22,3 +22,21 @@ STDOUT
 [tool sub_agent] {"prompt":"Child task","timeout_ms":75}
 [tool sub_agent failed] Error: Sub-agent timed out after 75 ms
 STDERR
+
+expect_process "T9.3: blocked child workers have a fixed limit" 0 \
+    run_with_mock sub-agent-limit env CODEX_HOME="$tool_home" PATH="$TEST_BIN_DIR:$PATH" \
+        microcodex Ask several blocked child agents <<'STDOUT' 3<<'STDERR'
+Recovered from sub-agent limit
+STDOUT
+
+[tool sub_agent] {"prompt":"Child task","timeout_ms":75}
+[tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+[tool sub_agent] {"prompt":"Child task","timeout_ms":75}
+[tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+[tool sub_agent] {"prompt":"Child task","timeout_ms":75}
+[tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+[tool sub_agent] {"prompt":"Child task","timeout_ms":75}
+[tool sub_agent failed] Error: Sub-agent timed out after 75 ms
+[tool sub_agent] {"prompt":"Child task","timeout_ms":75}
+[tool sub_agent failed] Error: Too many sub-agents are still running
+STDERR

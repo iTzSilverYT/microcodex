@@ -158,6 +158,25 @@ def validate_scenario!(scenario, request_number, payload)
       assert(output && output["output"] == "Error: Sub-agent timed out after 75 ms",
              "parent request did not contain the child timeout")
     end
+  when "sub-agent-limit"
+    validate_coding_tools!(payload)
+    validate_sub_agent_tools!(payload, request_number.even? || request_number == 9)
+    if request_number.zero?
+      assert(input_text(payload) == "Ask several blocked child agents",
+             "limit scenario did not receive the parent prompt")
+    elsif request_number.odd? && request_number < 9
+      assert(input_text(payload) == "Child task",
+             "limit scenario did not receive the child prompt")
+    else
+      call_number = (request_number + 1) / 2
+      output = payload.fetch("input").find do |item|
+        item["type"] == "function_call_output" && item["call_id"] == "call_sub_agent_#{call_number}"
+      end
+      expected = call_number == 5 ? "Error: Too many sub-agents are still running" :
+                                    "Error: Sub-agent timed out after 75 ms"
+      assert(output && output["output"] == expected,
+             "parent request did not contain the expected sub-agent limit result")
+    end
   when "tool-edit"
     validate_coding_tools!(payload)
     if request_number.zero?
@@ -388,10 +407,10 @@ def tool_call_response
   )
 end
 
-def sub_agent_call_response(timeout_ms: 1_000)
+def sub_agent_call_response(timeout_ms: 1_000, call_id: "call_sub_agent")
   sse(
     {type: "response.output_item.done",
-     item: {type: "function_call", call_id: "call_sub_agent", name: "sub_agent",
+     item: {type: "function_call", call_id: call_id, name: "sub_agent",
             arguments: JSON.generate(prompt: "Child task", timeout_ms: timeout_ms)}},
     completed
   )
@@ -487,6 +506,17 @@ def response_for(scenario, request_number, request_directory)
            else message_response("Recovered from child timeout")
            end
     [200, "OK", "text/event-stream", body]
+  when "sub-agent-limit"
+    body = if request_number == 9
+             message_response("Recovered from sub-agent limit")
+           elsif request_number.even?
+             sub_agent_call_response(timeout_ms: 75,
+                                     call_id: "call_sub_agent_#{request_number / 2 + 1}")
+           else
+             blocked_read_call_response(File.join(request_directory,
+                                                  "blocked-#{request_number / 2 + 1}.fifo"))
+           end
+    [200, "OK", "text/event-stream", body]
   when "tool-edit"
     [200, "OK", "text/event-stream",
      request_number.zero? ? edit_call_response : message_response("Edited edit-target.txt")]
@@ -570,6 +600,8 @@ expected_requests = if scenario == "context-error-retry"
                       3
                     elsif scenario == "tool-round-limit"
                       TOOL_ROUND_LIMIT + 2
+                    elsif scenario == "sub-agent-limit"
+                      10
                     elsif %w[sub-agent sub-agent-timeout].include?(scenario)
                       3
                     elsif %w[tool-write tool-edit tool-shell-env tool-bash-denied compaction-resume incomplete-output interrupt-output interrupt-tool].include?(scenario)
@@ -584,6 +616,16 @@ if scenario == "sub-agent-timeout"
   abort "could not create blocked read fixture" unless system("mkfifo", fifo)
   # Release a broken join after three seconds so the test fails instead of hanging.
   Thread.new { sleep 3; File.open(fifo, "w") {} }
+end
+if scenario == "sub-agent-limit"
+  4.times do |index|
+    fifo = File.join(request_directory, "blocked-#{index + 1}.fifo")
+    abort "could not create blocked read fixture" unless system("mkfifo", fifo)
+  end
+  Thread.new do
+    sleep 3
+    4.times { |index| File.open(File.join(request_directory, "blocked-#{index + 1}.fifo"), "w") {} }
+  end
 end
 
 request_number = 0
@@ -610,7 +652,8 @@ while request_number < expected_requests
                     "#{request_line}\r\n#{headers.inspect}\r\n\r\n#{body}")
       validate_common!(request_line, headers, payload)
       validate_scenario!(scenario, request_number, payload)
-      if scenario == "sub-agent-timeout" && request_number == 2
+      if (scenario == "sub-agent-timeout" && request_number == 2) ||
+         (scenario == "sub-agent-limit" && request_number == 9)
         elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - timeout_started_at
         assert(elapsed < 1.5, "sub-agent timeout blocked the parent for #{elapsed.round(2)} seconds")
       end
@@ -633,7 +676,7 @@ while request_number < expected_requests
         end
       else
         send_response(socket, *response_for(scenario, request_number, request_directory))
-        if scenario == "sub-agent-timeout" && request_number.zero?
+        if %w[sub-agent-timeout sub-agent-limit].include?(scenario) && request_number.zero?
           timeout_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         end
         if scenario == "interrupt-tool" && request_number.zero?

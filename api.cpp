@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -40,6 +41,13 @@ namespace {
         "The Codex response was incomplete: max_output_tokens";
     constexpr std::string_view tool_round_limit_error =
         "Codex exceeded the maximum number of tool rounds";
+    constexpr std::size_t maximum_live_sub_agents = 4;
+    std::atomic_size_t live_sub_agents{0};
+
+    struct SubAgentSlot {
+        ~SubAgentSlot() { live_sub_agents.fetch_sub(1, std::memory_order_relaxed); }
+    };
+
     std::string turnAbortedItem(const std::string_view error) {
         return microcodex::userMessageItem(
             "<turn_aborted>\n" + std::string(error) + "\n</turn_aborted>");
@@ -817,15 +825,29 @@ namespace microcodex {
         const auto deadline = timeout_ms > static_cast<std::size_t>(maximum_ms)
                                   ? std::chrono::steady_clock::time_point::max()
                                   : started + std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(timeout_ms));
-        std::thread worker([child, prompt = std::move(prompt), promise = std::move(promise)]() mutable {
-            try {
-                promise.set_value(child->sendUserMessage(prompt));
-            } catch (const std::exception &error) {
-                promise.set_value(std::unexpected(std::string("Sub-agent failed: ") + error.what()));
-            } catch (...) {
-                promise.set_value(std::unexpected("Sub-agent failed with an unknown exception"));
-            }
-        });
+        auto active = live_sub_agents.load(std::memory_order_relaxed);
+        while (active < maximum_live_sub_agents &&
+               !live_sub_agents.compare_exchange_weak(active, active + 1,
+                                                      std::memory_order_relaxed)) {}
+        if (active >= maximum_live_sub_agents) {
+            return std::unexpected("Too many sub-agents are still running");
+        }
+        std::thread worker;
+        try {
+            worker = std::thread([child, prompt = std::move(prompt), promise = std::move(promise)]() mutable {
+                const SubAgentSlot slot;
+                try {
+                    promise.set_value(child->sendUserMessage(prompt));
+                } catch (const std::exception &error) {
+                    promise.set_value(std::unexpected(std::string("Sub-agent failed: ") + error.what()));
+                } catch (...) {
+                    promise.set_value(std::unexpected("Sub-agent failed with an unknown exception"));
+                }
+            });
+        } catch (...) {
+            live_sub_agents.fetch_sub(1, std::memory_order_relaxed);
+            throw;
+        }
 
         // A tool that ignores its stop token can keep the child turn blocked.
         // The worker owns the child and promise, so it can safely finish after
